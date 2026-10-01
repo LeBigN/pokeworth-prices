@@ -1,0 +1,50 @@
+name: Update prices
+
+on:
+  schedule:
+    - cron: "17 4 * * *"       # une fois par jour (04h17 UTC)
+  workflow_dispatch:            # bouton « Run workflow » pour lancer à la main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-prices
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: echo "aucune dépendance"
+
+      - name: Build prices.json
+        run: python build_feed.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}          # facultatif (Settings > Secrets)
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}  # facultatif
+
+      - name: Commit if changed
+        run: |
+          git config user.name "prices-bot"
+          git config user.email "prices-bot@users.noreply.github.com"
+          cp prices.json /tmp/prices.json
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            cp /tmp/prices.json prices.json
+            git add prices.json
+            if git diff --cached --quiet; then echo "rien à publier"; exit 0; fi
+            git commit -m "Update prices"
+            if git push origin HEAD:main; then exit 0; fi
+            echo "push refusé, nouvel essai ($i)"; sleep 3
+          done
+          exit 1
