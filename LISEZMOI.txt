@@ -1,0 +1,4 @@
+Depot de prix PokeWorth - mise a jour v1.144
+Voir GUIDE_INSTALLATION.md (pas a pas). En bref : remplacez les fichiers a la racine du depot (sauf prices.json et
+tcgplayer_map.json), ajoutez ebay_sold.py, fr_filter.py, requirements.txt, remplacez les deux fichiers de .github/workflows/,
+puis lancez Actions > Update prices. Secrets eBay facultatifs : EBAY_CLIENT_ID, EBAY_CLIENT_SECRET.

@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 from cardmarket_source import CardmarketSource, _download, kind_of, norm, tokens
+from fr_filter import is_french_listing
 
 TCGCSV = "https://tcgcsv.com/tcgplayer/3"          # 3 = Pokémon
 FX_URL = "https://api.frankfurter.app/latest?from=USD&to=EUR"
@@ -118,6 +119,8 @@ def listing_median(item: dict, summaries: list[dict]) -> float | None:
     for s in summaries:
         title = s.get("title", "")
         if not need <= tokens(title):
+            continue
+        if not is_french_listing(title, item):      # marché français uniquement (versions EN/JP écartées)
             continue
         k = kind_of(title)
         if k != "ignore" and k != kind and kind != "coffret":

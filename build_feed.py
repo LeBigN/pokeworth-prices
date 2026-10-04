@@ -8,7 +8,8 @@ Usage :
     python build_feed.py [--catalog items_pokemon_fr.json] [--out prices.json] [--report]
     (aucune clé d'API : les fichiers de prix publics Cardmarket sont utilisés)
 
-Le fichier précédent est relu pour conserver l'historique (un point par jour, 90 jours).
+Le fichier précédent est relu pour conserver l'historique (un point par jour pendant 90 jours, puis un par semaine jusqu'à
+400 jours). Les points `"est": true` (reconstitués par backfill_history.py) sont conservés tels quels.
 Si un item échoue, son dernier prix connu est conservé sans ajouter de point d'historique.
 """
 import argparse
@@ -19,6 +20,7 @@ import sys
 
 from blend import blend, smooth
 from cardmarket_source import CardmarketSource
+from ebay_sold import EbaySoldSource
 from market_sources import EbaySource, TcgplayerSource
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -26,7 +28,8 @@ CATALOG_CANDIDATES = [
     HERE.parent / "PokeWorth" / "Resources" / "items_pokemon_fr.json",   # dans le projet
     HERE / "items_pokemon_fr.json",                                       # copie à côté du script
 ]
-HISTORY_DAYS = 90
+HISTORY_DAYS = 400          # profondeur max : 1 point/jour sur 90 j, puis 1 point/semaine
+DAILY_DAYS = 90
 
 
 _SOURCE = None
@@ -47,6 +50,8 @@ def fetch_quote(item: dict, previous_trend=None) -> dict:
     except LookupError:
         pass
     for name, source in _EXTRA.items():
+        if name == "ebay" and prices.get("ebay_sold"):
+            continue                       # des ventes réelles existent : les annonces actives ne comptent plus
         try:
             prices[name] = source.quote_eur(item)
         except Exception:  # noqa: BLE001 - une source secondaire ne bloque jamais le prix
@@ -54,6 +59,10 @@ def fetch_quote(item: dict, previous_trend=None) -> dict:
     value, kept = blend(prices)
     if value is None:
         raise LookupError("aucune source n'a de prix pour ce produit")
+    sold = getattr(_EXTRA.get("ebay_sold"), "last_stats", {}).get(item["id"])
+    if sold and "ebay_sold" in kept:
+        extra["n_sales"] = sold["n"]
+        extra["low_fr"] = sold["low"]      # plus bas prix réellement payé en France (ventes françaises uniquement)
     return {"trend": smooth(value, previous_trend), "sources": kept, **extra}
 
 
@@ -71,13 +80,46 @@ def load_json(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def merge_history(history: list, now: dt.datetime, trend) -> list:
-    """Un point par jour (le dernier de la journée l'emporte), fenêtre glissante de 90 jours."""
+def merge_history(history: list, now: dt.datetime, trend, low=None) -> list:
+    """Historique par item : un point/jour (le dernier de la journée l'emporte) pendant 90 jours,
+    puis un point/semaine jusqu'à HISTORY_DAYS. Chaque point : date, trend (prix moyen), low_fr (prix minimum)."""
     points = {parse(h["date"]).date().isoformat(): h for h in history}
     if trend is not None:
-        points[now.date().isoformat()] = {"date": iso(now), "trend": trend}
-    cutoff = (now - dt.timedelta(days=HISTORY_DAYS)).date().isoformat()
-    return [points[day] for day in sorted(points) if day >= cutoff]
+        entry = {"date": iso(now), "trend": trend}
+        if low:
+            entry["low_fr"] = low
+        points[now.date().isoformat()] = entry
+    today = now.date()
+    cutoff = (today - dt.timedelta(days=HISTORY_DAYS)).isoformat()
+    daily_cutoff = (today - dt.timedelta(days=DAILY_DAYS)).isoformat()
+    kept, weeks = [], set()
+    for day in sorted(points, reverse=True):          # du plus récent au plus ancien
+        if day < cutoff:
+            break
+        if day >= daily_cutoff:
+            kept.append(points[day])
+            continue
+        week = dt.date.fromisoformat(day).isocalendar()[:2]
+        if week not in weeks:                         # le plus récent de chaque semaine
+            weeks.add(week)
+            kept.append(points[day])
+    return list(reversed(kept))
+
+
+def clip_before_release(history: list, release: str | None) -> list:
+    """Aucun point avant la date de sortie officielle du produit (`date_sortie`, AAAA-MM-JJ) : un prix n'existe pas
+    avant la mise en vente. Sans date connue, l'historique est conservé tel quel."""
+    if not release:
+        return history
+    return [h for h in history if h["date"][:10] >= release[:10]]
+
+
+def average_30d(history: list, now: dt.datetime):
+    """Moyenne des relevés RÉELS des 30 derniers jours (le price guide Cardmarket ne la fournit pas pour les produits
+    scellés). `None` s'il y a moins de 3 relevés : une moyenne sur si peu de points n'a pas de sens."""
+    cutoff = now - dt.timedelta(days=30)
+    values = [h["trend"] for h in history if not h.get("est") and h.get("trend") and parse(h["date"]) >= cutoff]
+    return round(sum(values) / len(values), 2) if len(values) >= 3 else None
 
 
 def main() -> None:
@@ -107,6 +149,9 @@ def main() -> None:
             _EXTRA["tcgplayer"] = TcgplayerSource(items, map_file=HERE / "tcgplayer_map.json")
         except Exception as error:  # noqa: BLE001
             print(f"! TCGplayer ignoré : {error}", file=sys.stderr)
+        sold = EbaySoldSource.from_env()
+        if sold:
+            _EXTRA["ebay_sold"] = sold
         ebay = EbaySource.from_env()
         if ebay:
             _EXTRA["ebay"] = ebay
@@ -130,20 +175,23 @@ def main() -> None:
             quote = {key: old.get(key) for key in ("trend", "low_fr", "avg_30d")}
             fresh = False
 
+        history = merge_history(old.get("history", []), now, quote.get("trend") if fresh else None, quote.get("low_fr") if fresh else None)
+        history = clip_before_release(history, item.get("date_sortie"))
         prices.append({
             "id": item["id"],
             "trend": quote.get("trend"),
             "low_fr": quote.get("low_fr"),
-            "avg_30d": quote.get("avg_30d"),
+            "avg_30d": quote.get("avg_30d") or average_30d(history, now),
             "sources": quote.get("sources") or old.get("sources"),
-            "history": merge_history(old.get("history", []), now, quote.get("trend") if fresh else None),
+            "n_sales": quote.get("n_sales") if fresh else old.get("n_sales"),
+            "history": history,
         })
 
     if failures == len(items):
         sys.exit("Aucun prix récupéré : prices.json n'est pas modifié.")
 
     feed = {"version": 1, "updated_at": iso(now), "currency": "EUR", "prices": prices}
-    out.write_text(json.dumps(feed, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    out.write_text(json.dumps(feed, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     print(f"{len(items) - failures}/{len(items)} prix mis à jour -> {out}")
 
 

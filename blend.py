@@ -11,7 +11,7 @@ import statistics
 
 # Poids par source : Cardmarket est la référence du marché européen ; eBay France reflète les prix réellement
 # demandés aux particuliers ; TCGplayer (États-Unis, produits en anglais) sert de garde-fou.
-WEIGHTS = {"cardmarket": 0.60, "ebay": 0.25, "tcgplayer": 0.15}
+WEIGHTS = {"cardmarket": 0.60, "ebay_sold": 0.30, "ebay": 0.25, "tcgplayer": 0.15}
 
 OUTLIER_RATIO = 0.45          # une source à plus de 45 % de la médiane des autres est écartée
 SMOOTHING_ALPHA = 0.6         # poids de la nouvelle valeur (0.6 = réactif mais amorti)
