@@ -1,20 +1,26 @@
-name: Update prices
+name: Backfill history
 
+# À lancer UNE fois à la main (Actions > Backfill history > Run workflow), puis de temps en temps si besoin.
+# Reconstitue l'historique de prix (12 mois) à partir des archives publiques tcgcsv.com / TCGplayer,
+# calé sur le prix actuel du flux. Les points ajoutés portent "est": true (affichés en pointillés dans l'app).
 on:
-  schedule:
-    - cron: "17 4 * * *"       # une fois par jour (04h17 UTC)
-  workflow_dispatch:            # bouton « Run workflow » pour lancer à la main
+  workflow_dispatch:
+    inputs:
+      months:
+        description: "Profondeur de l'historique (mois)"
+        default: "12"
 
 permissions:
   contents: write
 
 concurrency:
-  group: update-prices
+  group: update-prices          # même groupe que la mise à jour quotidienne : jamais deux écritures en même temps
   cancel-in-progress: false
 
 jobs:
-  update:
+  backfill:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -23,14 +29,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: echo "aucune dépendance (build_feed.py n utilise que la bibliothèque standard)"
+        run: pip install -r requirements.txt
 
-      - name: Build prices.json
-        run: python build_feed.py
+      - name: Backfill prices.json
+        run: python backfill_history.py --months "${{ github.event.inputs.months }}"
         env:
           PYTHONUNBUFFERED: "1"
-          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}          # facultatif (Settings > Secrets)
-          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}  # facultatif
 
       - name: Commit if changed
         run: |
@@ -43,7 +47,7 @@ jobs:
             cp /tmp/prices.json prices.json
             git add prices.json
             if git diff --cached --quiet; then echo "rien à publier"; exit 0; fi
-            git commit -m "Update prices"
+            git commit -m "Backfill history"
             if git push origin HEAD:main; then exit 0; fi
             echo "push refusé, nouvel essai ($i)"; sleep 3
           done
