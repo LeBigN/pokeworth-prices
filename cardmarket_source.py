@@ -145,6 +145,12 @@ class CardmarketSource:
         if iid in self.manual:
             self.matches[iid] = int(self.manual[iid])
             return
+        # 19/11/2026 : identifiant Cardmarket vérifié déjà présent dans le catalogue (`cardmarket_id`, relevé avec l'URL de la fiche) :
+        # utilisé tel quel s'il existe dans la liste des produits Cardmarket (avant : ignoré, seul le rapprochement par le nom servait).
+        known = item.get("cardmarket_id")
+        if known and int(known) in self.products:
+            self.matches[iid] = int(known)
+            return
         code, kind = item["set_code"], item["categorie"]
         wanted = self._set_tokens.get(code)
         if not wanted:

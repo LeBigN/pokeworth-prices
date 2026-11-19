@@ -12,6 +12,8 @@ Le fichier précédent est relu pour conserver l'historique (un point par jour p
 400 jours). Les points `"est": true` (reconstitués par backfill_history.py) sont conservés tels quels.
 Si un item échoue, son dernier prix connu est conservé sans ajouter de point d'historique.
 """
+from __future__ import annotations
+
 import argparse
 import datetime as dt
 import json
@@ -138,7 +140,12 @@ def main() -> None:
     if catalog_path is None or not catalog_path.exists():
         sys.exit("Catalogue introuvable : passez --catalog chemin/vers/items_pokemon_fr.json")
 
-    items = load_json(catalog_path)["items"]
+    catalog = load_json(catalog_path)
+    items = catalog["items"]
+    # 19/11/2026 : produits renommés (`aliases` : ancien id -> nouvel id) : leur historique passe sous le nouvel id au lieu d'être perdu.
+    renamed: dict[str, list[str]] = {}
+    for old_id, new_id in (catalog.get("aliases") or {}).items():
+        renamed.setdefault(new_id, []).append(old_id)
     global _SOURCE
     _SOURCE = CardmarketSource(items, args.products_file, args.guide_file)
     if args.report:
@@ -166,6 +173,10 @@ def main() -> None:
 
     for item in items:
         old = previous.get(item["id"], {})
+        carried = [h for a in renamed.get(item["id"], []) for h in previous.get(a, {}).get("history", [])]
+        if carried:
+            old = {**{k: v for a in renamed[item["id"]] for k, v in previous.get(a, {}).items()}, **old,
+                   "history": carried + old.get("history", [])}     # les points du nouvel id l'emportent le même jour
         try:
             quote = fetch_quote(item, old.get("trend"))
             fresh = True
